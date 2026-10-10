@@ -1,6 +1,6 @@
 # ==========================================
-# REY X BONTEN - Web2APK Builder
-# URL website → APK Android (via WebView)
+# REY X BONTEN - Web2APK Builder (v2)
+# URL website -> APK Android (via WebView)
 # ==========================================
 
 name: Web2APK Builder
@@ -30,10 +30,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: rey-web2apk-${{ github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -51,25 +47,20 @@ jobs:
           df -h /
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: actions/actions-android@v3
-        continue-on-error: true
-
-      - name: Setup Android SDK (fallback)
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK packages
+        shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platform-tools" || true
-          sdkmanager "platforms;android-34" || true
-          sdkmanager "build-tools;34.0.0" || true
-          yes | sdkmanager --licenses >/dev/null || true
+          (yes | sdkmanager --licenses >/dev/null) || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Create WebView project
         shell: bash
@@ -81,13 +72,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Sanitize inputs
-          SAFE_NAME=$(echo "$APP_NAME" | sed "s/[\"']//g")
-          SAFE_PKG=$(echo "$PKG_NAME" | tr -cd 'a-z0-9.')
-          if [ -z "$SAFE_PKG" ]; then SAFE_PKG="com.reymd.webapp"; fi
+          # ---------- helper escape ----------
+          xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
+
+          # ---------- sanitize input ----------
           if ! echo "$SITE_URL" | grep -qE '^https?://'; then
             echo "::error::URL harus http:// atau https://"
             exit 1
+          fi
+          SAFE_NAME=$(echo "$APP_NAME" | sed "s/[\"']//g")
+          [ -z "$SAFE_NAME" ] && SAFE_NAME="WebApp"
+          SAFE_NAME_XML=$(xml_escape "$SAFE_NAME")
+
+          # package: huruf kecil, tiap segmen harus diawali huruf
+          SAFE_PKG=$(echo "$PKG_NAME" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9.')
+          SAFE_PKG=$(echo "$SAFE_PKG" | awk -F. 'BEGIN{OFS="."} {for(i=1;i<=NF;i++){ if($i ~ /^[0-9]/) $i="a"$i } print}')
+          SAFE_PKG=$(echo "$SAFE_PKG" | sed -E 's/\.+/./g; s/^\.//; s/\.$//')
+          if ! echo "$SAFE_PKG" | grep -qE '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'; then
+            SAFE_PKG="com.reymd.webapp"
           fi
 
           mkdir -p webview/app/src/main/java/com/rey/webview
@@ -99,7 +101,6 @@ jobs:
           mkdir -p webview/gradle/wrapper
           cd webview
 
-          # settings.gradle
           cat > settings.gradle << 'EOF'
           pluginManagement {
               repositories {
@@ -118,22 +119,18 @@ jobs:
           include ':app'
           EOF
 
-          # root build.gradle
           cat > build.gradle << 'EOF'
           plugins {
               id 'com.android.application' version '8.5.0' apply false
           }
           EOF
 
-          # gradle.properties
           cat > gradle.properties << 'EOF'
           android.useAndroidX=true
-          android.enableJetifier=true
           org.gradle.jvmargs=-Xmx4g
           org.gradle.parallel=true
           EOF
 
-          # app/build.gradle
           cat > app/build.gradle << GRADLE_EOF
           plugins { id 'com.android.application' }
           android {
@@ -160,7 +157,6 @@ jobs:
           }
           GRADLE_EOF
 
-          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << MANIFEST_EOF
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -169,7 +165,7 @@ jobs:
               <application
                   android:allowBackup="true"
                   android:icon="@mipmap/ic_launcher"
-                  android:label="${SAFE_NAME}"
+                  android:label="${SAFE_NAME_XML}"
                   android:roundIcon="@mipmap/ic_launcher"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -187,7 +183,7 @@ jobs:
           </manifest>
           MANIFEST_EOF
 
-          # MainActivity.java
+          # MainActivity: placeholder __SITE_URL__ diisi aman di bawah
           cat > app/src/main/java/com/rey/webview/MainActivity.java << 'JAVA_EOF'
           package com.rey.webview;
 
@@ -253,7 +249,7 @@ jobs:
                       android.view.Gravity.CENTER));
 
                   setContentView(root);
-                  webView.loadUrl("${SITE_URL}");
+                  webView.loadUrl("__SITE_URL__");
               }
 
               @Override
@@ -267,24 +263,29 @@ jobs:
           }
           JAVA_EOF
 
-          # Copy MainActivity to package path
+          # Pindah ke package path + isi URL dengan escape Java yang aman
           PKG_PATH=$(echo "$SAFE_PKG" | tr '.' '/')
           mkdir -p "app/src/main/java/$PKG_PATH"
-          sed "s/package com.rey.webview;/package $SAFE_PKG;/" \
-            app/src/main/java/com/rey/webview/MainActivity.java \
-            > "app/src/main/java/$PKG_PATH/MainActivity.java"
-          rm -rf app/src/main/java/com/rey/webview
+          python3 - "app/src/main/java/com/rey/webview/MainActivity.java" "app/src/main/java/$PKG_PATH/MainActivity.java" "$SAFE_PKG" "$SITE_URL" << 'PY_EOF'
+          import sys
+          src, dst, pkg, url = sys.argv[1:5]
+          code = open(src, encoding='utf-8').read()
+          code = code.replace('package com.rey.webview;', 'package ' + pkg + ';', 1)
+          safe_url = url.replace('\\', '\\\\').replace('"', '\\"')
+          code = code.replace('__SITE_URL__', safe_url, 1)
+          open(dst, 'w', encoding='utf-8').write(code)
+          PY_EOF
+          rm -rf app/src/main/java/com/rey
 
-          # Generate placeholder icon (simple 1x1 PNG)
-          # Kalo user kasih icon URL, download. Kalo nggak, pake placeholder.
+          # ---------- icon ----------
           ICON_OK=false
           if [ -n "$ICON_URL" ]; then
-            echo "Downloading icon from $ICON_URL..."
+            echo "Downloading icon..."
             curl -fsSL --connect-timeout 15 --max-time 60 "$ICON_URL" -o /tmp/icon.png && ICON_OK=true || ICON_OK=false
           fi
 
-          if [ "$ICON_OK" = "true" ] && file /tmp/icon.png | grep -q "PNG\|JPEG\|image"; then
-            echo "Icon valid, resizing with ImageMagick..."
+          if [ "$ICON_OK" = "true" ] && file /tmp/icon.png | grep -qE "PNG|JPEG|image"; then
+            echo "Icon valid, resizing..."
             sudo apt-get install -y imagemagick >/dev/null 2>&1 || true
             for SIZE in 48:mdpi 72:hdpi 96:xhdpi 144:xxhdpi 192:xxxhdpi; do
               PX=${SIZE%%:*}
@@ -293,23 +294,17 @@ jobs:
                 cp /tmp/icon.png "app/src/main/res/mipmap-${DPI}/ic_launcher.png"
             done
           else
-            echo "No valid icon, generating placeholder..."
+            echo "No valid icon, using placeholder..."
             python3 -c "
           from PIL import Image
-          img = Image.new('RGB', (192, 192), color=(15, 15, 20))
-          img.save('/tmp/placeholder.png')
-          " 2>/dev/null || {
-            # Fallback kalo PIL nggak ada: pake base64 PNG minimal
-            echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > /tmp/placeholder.png
-          }
-          for DPI in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-            cp /tmp/placeholder.png "app/src/main/res/mipmap-${DPI}/ic_launcher.png"
-          done
+          Image.new('RGB', (192, 192), color=(15, 15, 20)).save('/tmp/placeholder.png')
+          " 2>/dev/null || echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > /tmp/placeholder.png
+            for DPI in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+              cp /tmp/placeholder.png "app/src/main/res/mipmap-${DPI}/ic_launcher.png"
+            done
           fi
 
-          echo "WebView project ready:"
-          ls -la
-          ls -la app/src/main/java/
+          echo "WebView project ready."
           echo "ANDROID_PROJECT=$(pwd)" >> "$GITHUB_ENV"
 
       - name: Bootstrap Gradle wrapper
@@ -320,7 +315,6 @@ jobs:
           GRADLE_VER="8.7"
 
           if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Downloading gradle-wrapper.jar..."
             curl -fsSL "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VER}.0/gradle/wrapper/gradle-wrapper.jar" \
               -o gradle/wrapper/gradle-wrapper.jar || true
           fi
@@ -331,19 +325,19 @@ jobs:
               sudo unzip -q /tmp/gradle.zip -d /opt
               sudo ln -sfn "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
             fi
-            gradle wrapper --gradle-version "$GRADLE_VER" || true
+            gradle wrapper --gradle-version "$GRADLE_VER"
           fi
 
-          cat > gradle/wrapper/gradle-wrapper.properties <<EOF
+          cat > gradle/wrapper/gradle-wrapper.properties << EOF
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
-          distributionUrl=https\\://services.gradle.org/distributions/gradle-${GRADLE_VER}-all.zip
+          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VER}-all.zip
           zipStoreBase=GRADLE_USER_HOME
           zipStorePath=wrapper/dists
           EOF
 
-          [ -f "./gradlew" ] && chmod +x ./gradlew
-          ls -la gradle/wrapper/ || true
+          chmod +x ./gradlew
+          ls -la gradle/wrapper/
 
       - name: Build APK
         working-directory: ${{ env.ANDROID_PROJECT }}
@@ -351,7 +345,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          yes | sdkmanager --licenses >/dev/null || true
           ./gradlew --no-daemon --stacktrace assembleRelease || \
             ./gradlew --no-daemon --stacktrace assembleDebug
 
