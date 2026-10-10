@@ -1,0 +1,161 @@
+name: Web2APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Website URL'
+        required: true
+        type: string
+      app_name:
+        description: 'App Name'
+        required: true
+        type: string
+      icon_url:
+        description: 'Icon URL (PNG/JPG, 512x512)'
+        required: true
+        type: string
+      package_name:
+        description: 'Package Name (com.example.app)'
+        required: true
+        type: string
+        default: 'com.reymd.webapp'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+
+      - name: Create Flutter project
+        run: |
+          flutter create --org ${{ inputs.package_name }} --project-name web2apk_app webapp
+          cd webapp
+
+      - name: Add WebView dependency
+        run: |
+          cd webapp
+          flutter pub add webview_flutter
+          flutter pub add flutter_launcher_icons
+
+      - name: Download icon
+        run: |
+          cd webapp
+          mkdir -p assets
+          curl -L "${{ inputs.icon_url }}" -o assets/icon.png
+
+      - name: Configure pubspec
+        run: |
+          cd webapp
+          cat >> pubspec.yaml << 'EOF'
+
+          flutter_launcher_icons:
+            android: true
+            ios: false
+            image_path: "assets/icon.png"
+            adaptive_icon_background: "#000000"
+            adaptive_icon_foreground: "assets/icon.png"
+          EOF
+          flutter pub get
+
+      - name: Replace main.dart
+        run: |
+          cd webapp
+          cat > lib/main.dart << 'DART_EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() => runApp(const MyApp());
+
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: '${{ inputs.app_name }}',
+                debugShowCheckedModeBanner: false,
+                home: const HomePage(),
+              );
+            }
+          }
+
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
+            @override
+            State<HomePage> createState() => _HomePageState();
+          }
+
+          class _HomePageState extends State<HomePage> {
+            late final WebViewController _controller;
+            bool _isLoading = true;
+
+            @override
+            void initState() {
+              super.initState();
+              _controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onPageFinished: (url) => setState(() => _isLoading = false),
+                  ),
+                )
+                ..loadRequest(Uri.parse('${{ inputs.url }}'));
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: SafeArea(
+                  child: Stack(
+                    children: [
+                      WebViewWidget(controller: _controller),
+                      if (_isLoading)
+                        const Center(child: CircularProgressIndicator()),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          DART_EOF
+
+      - name: Set app name
+        run: |
+          cd webapp
+          sed -i 's/android:label=".*"/android:label="${{ inputs.app_name }}"/g' android/app/src/main/AndroidManifest.xml
+
+      - name: Generate icons
+        run: |
+          cd webapp
+          flutter pub run flutter_launcher_icons
+
+      - name: Build APK
+        run: |
+          cd webapp
+          flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          cd webapp
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             build/app/outputs/flutter-apk/${{ inputs.app_name }}.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web2apk-output
+          path: webapp/build/app/outputs/flutter-apk/*.apk
+          retention-days: 1
