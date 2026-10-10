@@ -52,15 +52,34 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          (yes | sdkmanager --licenses >/dev/null) || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          # Pakai Android SDK bawaan runner ubuntu-24.04 (tidak pakai setup-android yang gagal)
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKMGR=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)
+          if [ -z "$SDKMGR" ]; then SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"; fi
+          if [ ! -x "$SDKMGR" ]; then
+            echo "::error::sdkmanager tidak ditemukan di $SDK"
+            exit 1
+          fi
+          echo "sdkmanager: $SDKMGR"
+          (yes | "$SDKMGR" --sdk_root="$SDK" --licenses >/dev/null) || true
+          "$SDKMGR" --sdk_root="$SDK" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Check website (warning only)
+        shell: bash
+        env:
+          SITE_URL: ${{ inputs.url }}
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 25 -A "Mozilla/5.0" "$SITE_URL" || echo 000)
+          echo "HTTP $code untuk $SITE_URL"
+          if [ "$code" = "000" ] || [ "$code" -ge 400 ]; then
+            echo "::warning::Website mengembalikan $code. APK tetap dibuat, tapi isinya bisa kosong atau error."
+          fi
 
       - name: Create WebView project
         shell: bash
