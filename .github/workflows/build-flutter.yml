@@ -69,6 +69,23 @@ jobs:
               echo "Gradle wrapper dinaikkan ke 8.14"
             fi
           fi
+          # AGP minimal 8.11.1 (Flutter baru minta ini); naikkan kalau project lebih rendah
+          python3 - << 'PY_AGP'
+          import re, os
+          TARGET = (8, 11, 1)
+          def ver_fix(m):
+              v = tuple(int(x) for x in m.group(2).split('.'))
+              return m.group(1) + '8.11.1' + m.group(3) if v < TARGET else m.group(0)
+          for f in ['android/settings.gradle.kts', 'android/settings.gradle', 'android/build.gradle.kts', 'android/build.gradle']:
+              if not os.path.exists(f):
+                  continue
+              s = open(f, encoding='utf-8').read()
+              new = re.sub(r'(com\.android\.application["\']?\)?\s*version\s*["\'])(\d+(?:\.\d+)+)(["\'])', ver_fix, s)
+              new = re.sub(r'(com\.android\.tools\.build:gradle:)(\d+(?:\.\d+)+)()', ver_fix, new)
+              if new != s:
+                  open(f, 'w', encoding='utf-8').write(new)
+                  print('AGP dinaikkan di', f)
+          PY_AGP
           # set applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
