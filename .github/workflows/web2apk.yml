@@ -1,3 +1,8 @@
+# ==========================================
+# REY X BONTEN - Web2APK Builder
+# URL website → APK Android (via WebView)
+# ==========================================
+
 name: Web2APK Builder
 
 on:
@@ -12,150 +17,362 @@ on:
         required: true
         type: string
       icon_url:
-        description: 'Icon URL (PNG/JPG, 512x512)'
-        required: true
+        description: 'Icon URL (optional, PNG 512x512)'
+        required: false
+        default: ""
         type: string
       package_name:
-        description: 'Package Name (com.example.app)'
+        description: 'Package Name'
         required: true
         type: string
         default: 'com.reymd.webapp'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: rey-web2apk-${{ github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/.ghcup /usr/local/share/boost || true
+          sudo docker image prune -af || true
+          df -h /
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.19.0'
-          channel: 'stable'
+      - name: Setup Android SDK
+        uses: actions/actions-android@v3
+        continue-on-error: true
 
-      - name: Create Flutter project
+      - name: Setup Android SDK (fallback)
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
         run: |
-          flutter create --org ${{ inputs.package_name }} --project-name web2apk_app webapp
-          cd webapp
+          set -euo pipefail
+          sdkmanager "platform-tools" || true
+          sdkmanager "platforms;android-34" || true
+          sdkmanager "build-tools;34.0.0" || true
+          yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Add WebView dependency
+      - name: Create WebView project
+        shell: bash
+        env:
+          SITE_URL: ${{ inputs.url }}
+          APP_NAME: ${{ inputs.app_name }}
+          ICON_URL: ${{ inputs.icon_url }}
+          PKG_NAME: ${{ inputs.package_name }}
         run: |
-          cd webapp
-          flutter pub add webview_flutter
-          flutter pub add flutter_launcher_icons
+          set -euo pipefail
 
-      - name: Download icon
-        run: |
-          cd webapp
-          mkdir -p assets
-          curl -L "${{ inputs.icon_url }}" -o assets/icon.png
+          # Sanitize inputs
+          SAFE_NAME=$(echo "$APP_NAME" | sed "s/[\"']//g")
+          SAFE_PKG=$(echo "$PKG_NAME" | tr -cd 'a-z0-9.')
+          if [ -z "$SAFE_PKG" ]; then SAFE_PKG="com.reymd.webapp"; fi
+          if ! echo "$SITE_URL" | grep -qE '^https?://'; then
+            echo "::error::URL harus http:// atau https://"
+            exit 1
+          fi
 
-      - name: Configure pubspec
-        run: |
-          cd webapp
-          cat >> pubspec.yaml << 'EOF'
+          mkdir -p webview/app/src/main/java/com/rey/webview
+          mkdir -p webview/app/src/main/res/mipmap-hdpi
+          mkdir -p webview/app/src/main/res/mipmap-mdpi
+          mkdir -p webview/app/src/main/res/mipmap-xhdpi
+          mkdir -p webview/app/src/main/res/mipmap-xxhdpi
+          mkdir -p webview/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p webview/gradle/wrapper
+          cd webview
 
-          flutter_launcher_icons:
-            android: true
-            ios: false
-            image_path: "assets/icon.png"
-            adaptive_icon_background: "#000000"
-            adaptive_icon_foreground: "assets/icon.png"
+          # settings.gradle
+          cat > settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ReyWebApp"
+          include ':app'
           EOF
-          flutter pub get
 
-      - name: Replace main.dart
-        run: |
-          cd webapp
-          cat > lib/main.dart << 'DART_EOF'
-          import 'package:flutter/material.dart';
-          import 'package:webview_flutter/webview_flutter.dart';
-
-          void main() => runApp(const MyApp());
-
-          class MyApp extends StatelessWidget {
-            const MyApp({super.key});
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                title: '${{ inputs.app_name }}',
-                debugShowCheckedModeBanner: false,
-                home: const HomePage(),
-              );
-            }
+          # root build.gradle
+          cat > build.gradle << 'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.0' apply false
           }
+          EOF
 
-          class HomePage extends StatefulWidget {
-            const HomePage({super.key});
-            @override
-            State<HomePage> createState() => _HomePageState();
+          # gradle.properties
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx4g
+          org.gradle.parallel=true
+          EOF
+
+          # app/build.gradle
+          cat > app/build.gradle << GRADLE_EOF
+          plugins { id 'com.android.application' }
+          android {
+              namespace '${SAFE_PKG}'
+              compileSdk 34
+              defaultConfig {
+                  applicationId '${SAFE_PKG}'
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.debug
+                  }
+                  debug { }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
           }
+          GRADLE_EOF
 
-          class _HomePageState extends State<HomePage> {
-            late final WebViewController _controller;
-            bool _isLoading = true;
+          # AndroidManifest.xml
+          cat > app/src/main/AndroidManifest.xml << MANIFEST_EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="${SAFE_NAME}"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST_EOF
 
-            @override
-            void initState() {
-              super.initState();
-              _controller = WebViewController()
-                ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setNavigationDelegate(
-                  NavigationDelegate(
-                    onPageFinished: (url) => setState(() => _isLoading = false),
-                  ),
-                )
-                ..loadRequest(Uri.parse('${{ inputs.url }}'));
-            }
+          # MainActivity.java
+          cat > app/src/main/java/com/rey/webview/MainActivity.java << 'JAVA_EOF'
+          package com.rey.webview;
 
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                body: SafeArea(
-                  child: Stack(
-                    children: [
-                      WebViewWidget(controller: _controller),
-                      if (_isLoading)
-                        const Center(child: CircularProgressIndicator()),
-                    ],
-                  ),
-                ),
-              );
-            }
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.graphics.Bitmap;
+          import android.os.Bundle;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.ProgressBar;
+          import android.widget.FrameLayout;
+
+          public class MainActivity extends Activity {
+
+              private WebView webView;
+              private ProgressBar progressBar;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  FrameLayout root = new FrameLayout(this);
+                  progressBar = new ProgressBar(this);
+                  progressBar.setVisibility(View.GONE);
+                  webView = new WebView(this);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setBuiltInZoomControls(false);
+                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          progressBar.setVisibility(View.VISIBLE);
+                      }
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          progressBar.setVisibility(View.GONE);
+                      }
+                  });
+
+                  webView.setWebChromeClient(new WebChromeClient());
+
+                  root.addView(webView, new FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT));
+                  root.addView(progressBar, new FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      android.view.Gravity.CENTER));
+
+                  setContentView(root);
+                  webView.loadUrl("${SITE_URL}");
+              }
+
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (keyCode == KeyEvent.KEYCODE_BACK && webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                      return true;
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
           }
-          DART_EOF
+          JAVA_EOF
 
-      - name: Set app name
-        run: |
-          cd webapp
-          sed -i 's/android:label=".*"/android:label="${{ inputs.app_name }}"/g' android/app/src/main/AndroidManifest.xml
+          # Copy MainActivity to package path
+          PKG_PATH=$(echo "$SAFE_PKG" | tr '.' '/')
+          mkdir -p "app/src/main/java/$PKG_PATH"
+          sed "s/package com.rey.webview;/package $SAFE_PKG;/" \
+            app/src/main/java/com/rey/webview/MainActivity.java \
+            > "app/src/main/java/$PKG_PATH/MainActivity.java"
+          rm -rf app/src/main/java/com/rey/webview
 
-      - name: Generate icons
+          # Generate placeholder icon (simple 1x1 PNG)
+          # Kalo user kasih icon URL, download. Kalo nggak, pake placeholder.
+          ICON_OK=false
+          if [ -n "$ICON_URL" ]; then
+            echo "Downloading icon from $ICON_URL..."
+            curl -fsSL --connect-timeout 15 --max-time 60 "$ICON_URL" -o /tmp/icon.png && ICON_OK=true || ICON_OK=false
+          fi
+
+          if [ "$ICON_OK" = "true" ] && file /tmp/icon.png | grep -q "PNG\|JPEG\|image"; then
+            echo "Icon valid, resizing with ImageMagick..."
+            sudo apt-get install -y imagemagick >/dev/null 2>&1 || true
+            for SIZE in 48:mdpi 72:hdpi 96:xhdpi 144:xxhdpi 192:xxxhdpi; do
+              PX=${SIZE%%:*}
+              DPI=${SIZE##*:}
+              convert /tmp/icon.png -resize ${PX}x${PX} "app/src/main/res/mipmap-${DPI}/ic_launcher.png" 2>/dev/null || \
+                cp /tmp/icon.png "app/src/main/res/mipmap-${DPI}/ic_launcher.png"
+            done
+          else
+            echo "No valid icon, generating placeholder..."
+            python3 -c "
+          from PIL import Image
+          img = Image.new('RGB', (192, 192), color=(15, 15, 20))
+          img.save('/tmp/placeholder.png')
+          " 2>/dev/null || {
+            # Fallback kalo PIL nggak ada: pake base64 PNG minimal
+            echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > /tmp/placeholder.png
+          }
+          for DPI in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp /tmp/placeholder.png "app/src/main/res/mipmap-${DPI}/ic_launcher.png"
+          done
+          fi
+
+          echo "WebView project ready:"
+          ls -la
+          ls -la app/src/main/java/
+          echo "ANDROID_PROJECT=$(pwd)" >> "$GITHUB_ENV"
+
+      - name: Bootstrap Gradle wrapper
+        working-directory: ${{ env.ANDROID_PROJECT }}
+        shell: bash
         run: |
-          cd webapp
-          flutter pub run flutter_launcher_icons
+          set -euo pipefail
+          GRADLE_VER="8.7"
+
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Downloading gradle-wrapper.jar..."
+            curl -fsSL "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VER}.0/gradle/wrapper/gradle-wrapper.jar" \
+              -o gradle/wrapper/gradle-wrapper.jar || true
+          fi
+
+          if [ ! -f "./gradlew" ]; then
+            if ! command -v gradle >/dev/null 2>&1; then
+              curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -o /tmp/gradle.zip
+              sudo unzip -q /tmp/gradle.zip -d /opt
+              sudo ln -sfn "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
+            fi
+            gradle wrapper --gradle-version "$GRADLE_VER" || true
+          fi
+
+          cat > gradle/wrapper/gradle-wrapper.properties <<EOF
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\\://services.gradle.org/distributions/gradle-${GRADLE_VER}-all.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          [ -f "./gradlew" ] && chmod +x ./gradlew
+          ls -la gradle/wrapper/ || true
 
       - name: Build APK
+        working-directory: ${{ env.ANDROID_PROJECT }}
+        shell: bash
         run: |
-          cd webapp
-          flutter build apk --release
+          set -euo pipefail
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          yes | sdkmanager --licenses >/dev/null || true
+          ./gradlew --no-daemon --stacktrace assembleRelease || \
+            ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: Rename APK
+      - name: Collect APK
+        shell: bash
         run: |
-          cd webapp
-          mv build/app/outputs/flutter-apk/app-release.apk \
-             build/app/outputs/flutter-apk/${{ inputs.app_name }}.apk
+          set -euo pipefail
+          mkdir -p output
+          APK="$(find "$ANDROID_PROJECT" -type f -path '*/build/outputs/apk/*' -name '*.apk' -size +10k | head -1 || true)"
+          if [ -z "${APK:-}" ]; then
+            echo "::error::APK tidak ditemukan."
+            find "$ANDROID_PROJECT" -name '*.apk' -print || true
+            exit 1
+          fi
+          cp "$APK" output/app.apk
+          echo "APK: $APK ($(du -h output/app.apk | cut -f1))"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web2apk-output
-          path: webapp/build/app/outputs/flutter-apk/*.apk
+          name: web2apk-${{ github.run_id }}
+          path: output/app.apk
+          if-no-files-found: error
           retention-days: 1
