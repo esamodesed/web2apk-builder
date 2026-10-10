@@ -55,6 +55,8 @@ jobs:
       - name: Prepare project
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          # dependency lama sering tidak kompatibel dengan Flutter terbaru (mis. font_awesome_flutter 10.x)
+          flutter pub upgrade --major-versions || flutter pub get
           flutter pub get
           if [ ! -d android ]; then
             flutter create --platforms=android .
