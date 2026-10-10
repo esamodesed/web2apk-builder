@@ -1,0 +1,96 @@
+name: Build Flutter Debug APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_url:
+        description: 'URL ZIP project Flutter'
+        required: true
+        type: string
+      app_name:
+        description: 'Nama App'
+        required: false
+        type: string
+        default: 'FlutterApp'
+      package_name:
+        description: 'Package Name'
+        required: false
+        type: string
+        default: 'com.reymd.flutterapp'
+      priority:
+        description: 'Priority (owner / user)'
+        required: false
+        type: string
+        default: 'user'
+
+concurrency:
+  group: build-debug-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Download & Extract Project
+        run: |
+          curl -L "${{ inputs.project_url }}" -o project.zip
+          mkdir project
+          unzip -q project.zip -d project
+          cd project
+          if [ ! -f pubspec.yaml ]; then
+            SUB=$(find . -maxdepth 2 -name pubspec.yaml | head -1 | xargs dirname 2>/dev/null)
+            if [ -n "$SUB" ]; then
+              mv $SUB/* . 2>/dev/null || true
+              mv $SUB/.* . 2>/dev/null || true
+              rmdir $SUB 2>/dev/null || true
+            fi
+          fi
+          ls -la
+
+      - name: Validate Project
+        run: |
+          cd project
+          if [ ! -f pubspec.yaml ]; then
+            echo "ERROR: pubspec.yaml not found!"
+            exit 1
+          fi
+
+      - name: Get dependencies
+        run: |
+          cd project
+          flutter pub get
+
+      - name: Build Debug APK
+        run: |
+          cd project
+          flutter build apk --debug --no-tree-shake-icons
+
+      - name: Rename APK
+        run: |
+          cd project
+          mv build/app/outputs/flutter-apk/app-debug.apk \
+             build/app/outputs/flutter-apk/${{ inputs.app_name }}-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-debug-${{ github.run_id }}
+          path: project/build/app/outputs/flutter-apk/*.apk
+          retention-days: 1
