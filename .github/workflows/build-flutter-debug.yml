@@ -59,6 +59,16 @@ jobs:
           if [ ! -d android ]; then
             flutter create --platforms=android .
           fi
+          # Flutter minta Gradle >= 8.14; naikkan wrapper kalau project masih lebih rendah
+          WP=android/gradle/wrapper/gradle-wrapper.properties
+          if [ -f "$WP" ]; then
+            CUR=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?-(bin|all)' "$WP" | head -1 | sed -E 's/gradle-([0-9.]+)-.*/\1/')
+            echo "Gradle wrapper saat ini: ${CUR:-tidak diketahui}"
+            if [ -n "$CUR" ] && [ "$CUR" != "8.14" ] && [ "$(printf '%s\n8.14\n' "$CUR" | sort -V | head -1)" = "$CUR" ]; then
+              sed -i -E 's#gradle-[0-9.]+-(bin|all)\.zip#gradle-8.14-all.zip#' "$WP"
+              echo "Gradle wrapper dinaikkan ke 8.14"
+            fi
+          fi
           # set applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
