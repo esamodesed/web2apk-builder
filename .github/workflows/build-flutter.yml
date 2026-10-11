@@ -66,22 +66,32 @@ jobs:
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f" || true
           done
-          sed -i "s/android:label=\"[^\"]*\"/android:label=\"$APP_NAME\"/" android/app/src/main/AndroidManifest.xml
 
       - name: Build release APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          flutter build apk --release --split-per-abi
+          flutter build apk --release
 
       - name: Collect APK
         run: |
-          SAFE=$(echo "$APP_NAME" | tr -cd 'A-Za-z0-9_-')
+          set -euo pipefail
+          MAN="$PROJECT_DIR/android/app/src/main/AndroidManifest.xml"
+          RAW=$(grep -o 'android:label="[^"]*"' "$MAN" | head -n 1 | sed -E 's/.*="([^"]*)"/\1/' || true)
+          if [[ "$RAW" == @string/* ]]; then
+            KEY=${RAW#@string/}
+            RAW=$(grep -o "<string name=\"$KEY\">[^<]*</string>" "$PROJECT_DIR/android/app/src/main/res/values/strings.xml" 2>/dev/null | head -n 1 | sed -E 's/.*>([^<]*)<.*/\1/' || true)
+          fi
+          SAFE=$(echo "$RAW" | tr ' ' '_' | tr -cd 'A-Za-z0-9_-')
+          [ -z "$SAFE" ] && SAFE="app"
+          APK=$(find "$PROJECT_DIR/build/app/outputs/flutter-apk" -name "*.apk" | head -n 1 || true)
+          if [ -z "$APK" ]; then
+            echo "::error::Tidak ada APK yang terbentuk"
+            exit 1
+          fi
           mkdir -p out
-          find "$PROJECT_DIR/build/app/outputs/flutter-apk" -name "*.apk" | while read -r apk; do
-            cp "$apk" "out/${SAFE}-$(basename "$apk")"
-          done
+          cp "$APK" "out/${SAFE}.apk"
+          echo "Nama dari AndroidManifest: ${SAFE}.apk"
           ls -la out
-          test -n "$(ls out/*.apk 2>/dev/null)" || { echo "::error::Tidak ada APK yang terbentuk"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
