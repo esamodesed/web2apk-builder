@@ -118,6 +118,28 @@ jobs:
                       open(f, 'w', encoding='utf-8').write(n)
                       print('disesuaikan:', f)
           PY_FA
+          # perbaikan error Dart yang tersisa (API package berubah / import hilang)
+          python3 - << 'PY_FIX2'
+          import glob, re
+          for f in glob.glob('lib/**/*.dart', recursive=True):
+              s = open(f, encoding='utf-8').read()
+              n = re.sub(r'FilePicker\.platform\.', 'FilePicker.', s)
+              n = re.sub(r'(\?\s*)FontAwesomeIcons\.(\w+)(\s*:\s*)Icons\.(\w+)', r'\1FontAwesomeIcons.\2 as dynamic\3Icons.\4 as dynamic', n)
+              if 'placemarkFromCoordinates' in n and 'package:geocoding/geocoding.dart' not in n:
+                  n = "import 'package:geocoding/geocoding.dart';\n" + n
+              if n != s:
+                  open(f, 'w', encoding='utf-8').write(n)
+                  print('diperbaiki:', f)
+          PY_FIX2
+          if [ -f pubspec.yaml ] && ! grep -q "geocoding:" pubspec.yaml; then
+            if grep -rq "placemarkFromCoordinates" lib 2>/dev/null; then flutter pub add geocoding || true; fi
+          fi
+          flutter pub get
+
+          # permission_handler minta compileSdk 37
+          for f in android/app/build.gradle android/app/build.gradle.kts; do
+            [ -f "$f" ] && sed -i -E 's/compileSdk[[:space:]]*=?[[:space:]]*flutter\.compileSdkVersion/compileSdk = 37/' "$f" || true
+          done
           # set applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
