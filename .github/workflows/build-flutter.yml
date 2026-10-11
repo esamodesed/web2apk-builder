@@ -1,4 +1,4 @@
-name: Build Flutter APK
+name: Build Flutter Debug APK
 
 on:
   workflow_dispatch:
@@ -106,17 +106,30 @@ jobs:
                   open(f, 'w', encoding='utf-8').write(new)
                   print('Kotlin dinaikkan di', f)
           PY_KGP
+          # font_awesome_flutter 11: FontAwesomeIcons bukan IconData lagi. Sesuaikan otomatis file yang memakai FontAwesome.
+          python3 - << 'PY_FA'
+          import glob, re
+          for f in glob.glob('lib/**/*.dart', recursive=True):
+              s = open(f, encoding='utf-8').read()
+              if 'font_awesome_flutter' not in s:
+                  continue
+              n = re.sub(r'\bIcon\(\s*FontAwesomeIcons\.', 'FaIcon(FontAwesomeIcons.', s)
+              n = re.sub(r'\bIconData\?', 'dynamic', n)
+              n = re.sub(r'\bIconData\b', 'dynamic', n)
+              if n != s:
+                  open(f, 'w', encoding='utf-8').write(n)
+                  print('FontAwesome disesuaikan:', f)
+          PY_FA
           # set applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
           done
           sed -i "s/android:label=\"[^\"]*\"/android:label=\"$APP_NAME\"/" android/app/src/main/AndroidManifest.xml
 
-      - name: Build release APK
+      - name: Build debug APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          flutter build apk --release --split-per-abi
-          flutter build apk --release
+          flutter build apk --debug
 
       - name: Collect APK
         run: |
@@ -130,6 +143,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-release
+          name: apk-debug
           path: out/*.apk
           retention-days: 3
