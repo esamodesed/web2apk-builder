@@ -1,4 +1,4 @@
-name: Build Flutter Debug APK
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
@@ -126,10 +126,11 @@ jobs:
           done
           sed -i "s/android:label=\"[^\"]*\"/android:label=\"$APP_NAME\"/" android/app/src/main/AndroidManifest.xml
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          flutter build apk --debug
+          flutter build apk --release --split-per-abi
+          flutter build apk --release
 
       - name: Collect APK
         run: |
@@ -143,6 +144,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-debug
+          name: apk-release
           path: out/*.apk
           retention-days: 3
