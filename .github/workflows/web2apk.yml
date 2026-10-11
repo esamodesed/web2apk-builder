@@ -33,7 +33,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
     steps:
@@ -69,17 +69,6 @@ jobs:
           echo "sdkmanager: $SDKMGR"
           (yes | "$SDKMGR" --sdk_root="$SDK" --licenses >/dev/null) || true
           "$SDKMGR" --sdk_root="$SDK" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Check website (warning only)
-        shell: bash
-        env:
-          SITE_URL: ${{ inputs.url }}
-        run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 25 -A "Mozilla/5.0" "$SITE_URL" || echo 000)
-          echo "HTTP $code untuk $SITE_URL"
-          if [ "$code" = "000" ] || [ "$code" -ge 400 ]; then
-            echo "::warning::Website mengembalikan $code. APK tetap dibuat, tapi isinya bisa kosong atau error."
-          fi
 
       - name: Create WebView project
         shell: bash
@@ -208,14 +197,18 @@ jobs:
 
           import android.annotation.SuppressLint;
           import android.app.Activity;
+          import android.content.ActivityNotFoundException;
           import android.content.Intent;
           import android.graphics.Bitmap;
           import android.net.Uri;
           import android.os.Bundle;
           import android.view.KeyEvent;
           import android.view.View;
+          import android.webkit.DownloadListener;
           import android.webkit.ValueCallback;
           import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceError;
+          import android.webkit.WebResourceRequest;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
@@ -225,6 +218,7 @@ jobs:
           public class MainActivity extends Activity {
 
               private static final int FILE_CHOOSER_REQ = 1001;
+              private static final String SITE_URL = "__SITE_URL__";
               private WebView webView;
               private ProgressBar progressBar;
               private ValueCallback<Uri[]> filePathCallback;
@@ -250,19 +244,64 @@ jobs:
                   settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                   settings.setCacheMode(WebSettings.LOAD_DEFAULT);
                   settings.setMediaPlaybackRequiresUserGesture(false);
+                  settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
                   webView.setWebViewClient(new WebViewClient() {
+                      // link non-web (tel:, mailto:, whatsapp://, intent://, dll) dibuka aplikasinya, bukan bikin error
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          Uri uri = request.getUrl();
+                          String scheme = uri.getScheme();
+                          if (scheme == null) return false;
+                          if (scheme.equals("http") || scheme.equals("https") || scheme.equals("about")
+                                  || scheme.equals("data") || scheme.equals("blob") || scheme.equals("file")
+                                  || scheme.equals("javascript")) {
+                              return false;
+                          }
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                          } catch (ActivityNotFoundException e) {
+                              // aplikasi tujuan tidak terpasang: abaikan
+                          }
+                          return true;
+                      }
+
                       @Override
                       public void onPageStarted(WebView view, String url, Bitmap favicon) {
                           progressBar.setVisibility(View.VISIBLE);
                       }
+
                       @Override
                       public void onPageFinished(WebView view, String url) {
                           progressBar.setVisibility(View.GONE);
                       }
+
+                      // halaman gagal dimuat: tampilkan pesan + tombol coba lagi, bukan layar error mentah
+                      @Override
+                      public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                          if (request.isForMainFrame()) {
+                              progressBar.setVisibility(View.GONE);
+                              String html = "<html><body style='font-family:sans-serif;text-align:center;padding:24px;background:#111;color:#eee'>"
+                                      + "<h3>Gagal memuat halaman</h3>"
+                                      + "<p>Cek koneksi internet, lalu coba lagi.</p>"
+                                      + "<p><a style='color:#6cf' href='" + SITE_URL + "'>Coba lagi</a></p>"
+                                      + "</body></html>";
+                              view.loadDataWithBaseURL(SITE_URL, html, "text/html", "UTF-8", null);
+                          }
+                      }
                   });
 
-                  // Upload foto & video: tanpa ini tombol <input type="file"> di web tidak jalan
+                  // download (mis. APK/file dari website) dibuka lewat aplikasi browser/download
+                  webView.setDownloadListener(new DownloadListener() {
+                      @Override
+                      public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                          } catch (ActivityNotFoundException e) { }
+                      }
+                  });
+
+                  // upload foto & video: pemilih file Android
                   webView.setWebChromeClient(new WebChromeClient() {
                       @Override
                       public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
@@ -303,7 +342,7 @@ jobs:
                       android.view.Gravity.CENTER));
 
                   setContentView(root);
-                  webView.loadUrl("__SITE_URL__");
+                  webView.loadUrl(SITE_URL);
               }
 
               @Override
