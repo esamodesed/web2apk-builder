@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      GRADLE_OPTS: -Dorg.gradle.caching=true -Dorg.gradle.parallel=true -Dorg.gradle.jvmargs=-Xmx4g
       PROJECT_URL: ${{ inputs.project_url }}
       APP_NAME: ${{ inputs.app_name }}
       PKG_NAME: ${{ inputs.package_name }}
@@ -47,106 +48,23 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Flutter disamakan dengan project (lock file: Dart >= 3.9 = Flutter 3.35)
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.35.0'
           channel: stable
           cache: true
 
       - name: Prepare project
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          # dependency lama sering tidak kompatibel dengan Flutter terbaru (mis. font_awesome_flutter 10.x)
-          flutter pub upgrade --major-versions || flutter pub get
           flutter pub get
           if [ ! -d android ]; then
             flutter create --platforms=android .
           fi
-          # Flutter minta Gradle >= 8.14; naikkan wrapper kalau project masih lebih rendah
-          WP=android/gradle/wrapper/gradle-wrapper.properties
-          if [ -f "$WP" ]; then
-            CUR=$(grep -oE 'gradle-[0-9]+\.[0-9]+(\.[0-9]+)?-(bin|all)' "$WP" | head -1 | sed -E 's/gradle-([0-9.]+)-.*/\1/')
-            echo "Gradle wrapper saat ini: ${CUR:-tidak diketahui}"
-            if [ -n "$CUR" ] && [ "$CUR" != "8.14" ] && [ "$(printf '%s\n8.14\n' "$CUR" | sort -V | head -1)" = "$CUR" ]; then
-              sed -i -E 's#gradle-[0-9.]+-(bin|all)\.zip#gradle-8.14-all.zip#' "$WP"
-              echo "Gradle wrapper dinaikkan ke 8.14"
-            fi
-          fi
-          # AGP minimal 8.11.1 (Flutter baru minta ini); naikkan kalau project lebih rendah
-          python3 - << 'PY_AGP'
-          import re, os
-          TARGET = (8, 11, 1)
-          def ver_fix(m):
-              v = tuple(int(x) for x in m.group(2).split('.'))
-              return m.group(1) + '8.11.1' + m.group(3) if v < TARGET else m.group(0)
-          for f in ['android/settings.gradle.kts', 'android/settings.gradle', 'android/build.gradle.kts', 'android/build.gradle']:
-              if not os.path.exists(f):
-                  continue
-              s = open(f, encoding='utf-8').read()
-              new = re.sub(r'(com\.android\.application["\']?\)?\s*version\s*["\'])(\d+(?:\.\d+)+)(["\'])', ver_fix, s)
-              new = re.sub(r'(com\.android\.tools\.build:gradle:)(\d+(?:\.\d+)+)()', ver_fix, new)
-              if new != s:
-                  open(f, 'w', encoding='utf-8').write(new)
-                  print('AGP dinaikkan di', f)
-          PY_AGP
-          # Kotlin minimal 2.2.20 (Flutter baru minta ini); naikkan kalau project lebih rendah
-          python3 - << 'PY_KGP'
-          import re, os
-          TARGET = (2, 2, 20)
-          def ver_fix(m):
-              v = tuple(int(x) for x in m.group(2).split('.'))
-              return m.group(1) + '2.2.20' + m.group(3) if v < TARGET else m.group(0)
-          for f in ['android/settings.gradle.kts', 'android/settings.gradle', 'android/build.gradle.kts', 'android/build.gradle']:
-              if not os.path.exists(f):
-                  continue
-              s = open(f, encoding='utf-8').read()
-              new = re.sub(r'(org\.jetbrains\.kotlin\.android["\']?\)?\s*version\s*["\'])(\d+(?:\.\d+)+)(["\'])', ver_fix, s)
-              new = re.sub(r'(org\.jetbrains\.kotlin:kotlin-gradle-plugin:)(\d+(?:\.\d+)+)()', ver_fix, new)
-              new = re.sub(r'(kotlin_version\s*=\s*["\'])(\d+(?:\.\d+)+)(["\'])', ver_fix, new)
-              if new != s:
-                  open(f, 'w', encoding='utf-8').write(new)
-                  print('Kotlin dinaikkan di', f)
-          PY_KGP
-          # font_awesome_flutter 11: FontAwesomeIcons bukan IconData lagi. Sesuaikan semua file di lib/ jika project memakai package ini.
-          python3 - << 'PY_FA'
-          import glob, re, os
-          if os.path.exists('pubspec.yaml') and 'font_awesome_flutter' in open('pubspec.yaml', encoding='utf-8').read():
-              for f in glob.glob('lib/**/*.dart', recursive=True):
-                  s = open(f, encoding='utf-8').read()
-                  n = re.sub(r'\bIcon\(\s*FontAwesomeIcons\.', 'FaIcon(FontAwesomeIcons.', s)
-                  n = re.sub(r'\bIconData\b', 'dynamic', n)
-                  if n != s:
-                      open(f, 'w', encoding='utf-8').write(n)
-                      print('disesuaikan:', f)
-          PY_FA
-          # perbaikan error Dart yang tersisa (API package berubah / import hilang)
-          python3 - << 'PY_FIX2'
-          import glob, re
-          for f in glob.glob('lib/**/*.dart', recursive=True):
-              s = open(f, encoding='utf-8').read()
-              n = re.sub(r'FilePicker\.platform\.', 'FilePicker.', s)
-              n = re.sub(r'(\?\s*)FontAwesomeIcons\.(\w+)(\s*:\s*)Icons\.(\w+)', r'\1FontAwesomeIcons.\2 as dynamic\3Icons.\4 as dynamic', n)
-              if 'placemarkFromCoordinates' in n and not re.search(r"import\s+['\"]package:geocoding/geocoding\.dart['\"]\s*;", n):
-                  n = "import 'package:geocoding/geocoding.dart';\n" + n
-              if n != s:
-                  open(f, 'w', encoding='utf-8').write(n)
-                  print('diperbaiki:', f)
-          PY_FIX2
-          if [ -f pubspec.yaml ] && ! grep -q "geocoding:" pubspec.yaml; then
-            if grep -rq "placemarkFromCoordinates" lib 2>/dev/null; then flutter pub add geocoding || true; fi
-          fi
-          flutter pub get
-
-          echo "--- diagnosa geocoding ---"
-          grep -n -A2 "name: geocoding" pubspec.lock || echo "geocoding tidak ada di pubspec.lock"
-          grep -rn "^import.*geocoding\|placemarkFromCoordinates" lib || true
-
-          # permission_handler minta compileSdk 37
+          # applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
-            [ -f "$f" ] && sed -i -E 's/compileSdk[[:space:]]*=?[[:space:]]*flutter\.compileSdkVersion/compileSdk = 37/' "$f" || true
-          done
-          # set applicationId & label sesuai input (groovy & kts)
-          for f in android/app/build.gradle android/app/build.gradle.kts; do
-            [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
+            [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f" || true
           done
           sed -i "s/android:label=\"[^\"]*\"/android:label=\"$APP_NAME\"/" android/app/src/main/AndroidManifest.xml
 
@@ -154,7 +72,6 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           flutter build apk --release --split-per-abi
-          flutter build apk --release
 
       - name: Collect APK
         run: |
