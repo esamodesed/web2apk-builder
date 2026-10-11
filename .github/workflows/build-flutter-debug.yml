@@ -55,6 +55,8 @@ jobs:
       - name: Prepare project
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          # dependency lama sering tidak kompatibel dengan Flutter terbaru (mis. font_awesome_flutter 10.x)
+          flutter pub upgrade --major-versions || flutter pub get
           flutter pub get
           if [ ! -d android ]; then
             flutter create --platforms=android .
@@ -104,6 +106,20 @@ jobs:
                   open(f, 'w', encoding='utf-8').write(new)
                   print('Kotlin dinaikkan di', f)
           PY_KGP
+          # font_awesome_flutter 11: FontAwesomeIcons bukan IconData lagi. Sesuaikan otomatis file yang memakai FontAwesome.
+          python3 - << 'PY_FA'
+          import glob, re
+          for f in glob.glob('lib/**/*.dart', recursive=True):
+              s = open(f, encoding='utf-8').read()
+              if 'font_awesome_flutter' not in s:
+                  continue
+              n = re.sub(r'\bIcon\(\s*FontAwesomeIcons\.', 'FaIcon(FontAwesomeIcons.', s)
+              n = re.sub(r'\bIconData\?', 'dynamic', n)
+              n = re.sub(r'\bIconData\b', 'dynamic', n)
+              if n != s:
+                  open(f, 'w', encoding='utf-8').write(n)
+                  print('FontAwesome disesuaikan:', f)
+          PY_FA
           # set applicationId & label sesuai input (groovy & kts)
           for f in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$f" ] && sed -i -E "s/applicationId[[:space:]]*=?[[:space:]]*\"[^\"]*\"/applicationId = \"$PKG_NAME\"/" "$f"
