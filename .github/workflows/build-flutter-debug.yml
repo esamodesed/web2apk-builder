@@ -125,7 +125,7 @@ jobs:
               s = open(f, encoding='utf-8').read()
               n = re.sub(r'FilePicker\.platform\.', 'FilePicker.', s)
               n = re.sub(r'(\?\s*)FontAwesomeIcons\.(\w+)(\s*:\s*)Icons\.(\w+)', r'\1FontAwesomeIcons.\2 as dynamic\3Icons.\4 as dynamic', n)
-              if 'placemarkFromCoordinates' in n and 'package:geocoding/geocoding.dart' not in n:
+              if 'placemarkFromCoordinates' in n and not re.search(r"import\s+['\"]package:geocoding/geocoding\.dart['\"]\s*;", n):
                   n = "import 'package:geocoding/geocoding.dart';\n" + n
               if n != s:
                   open(f, 'w', encoding='utf-8').write(n)
@@ -135,6 +135,10 @@ jobs:
             if grep -rq "placemarkFromCoordinates" lib 2>/dev/null; then flutter pub add geocoding || true; fi
           fi
           flutter pub get
+
+          echo "--- diagnosa geocoding ---"
+          grep -n -A2 "name: geocoding" pubspec.lock || echo "geocoding tidak ada di pubspec.lock"
+          grep -rn "^import.*geocoding\|placemarkFromCoordinates" lib || true
 
           # permission_handler minta compileSdk 37
           for f in android/app/build.gradle android/app/build.gradle.kts; do
