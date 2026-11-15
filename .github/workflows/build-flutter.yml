@@ -1,5 +1,7 @@
 name: Build Flutter APK
 
+run-name: ${{ inputs.build_id || github.run_id }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,6 +21,11 @@ on:
         description: 'owner / user'
         required: false
         default: 'user'
+        type: string
+      build_id:
+        description: 'ID unik build (diisi bot)'
+        required: false
+        default: ''
         type: string
 
 jobs:
