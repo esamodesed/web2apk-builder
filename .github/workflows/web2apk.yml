@@ -5,6 +5,8 @@
 
 name: Web2APK Builder
 
+run-name: ${{ inputs.build_id || github.run_id }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -26,6 +28,11 @@ on:
         required: true
         type: string
         default: 'com.reymd.webapp'
+      build_id:
+        description: 'ID unik build (diisi bot)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
